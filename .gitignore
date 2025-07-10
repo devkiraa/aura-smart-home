@@ -1,0 +1,29 @@
+# General
+.DS_Store
+/build/
+*.lock
+
+# VS Code
+.vscode/
+
+# Flutter App ('app' folder)
+app/.dart_tool/
+app/.idea/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/build/
+app/ios/Pods/
+app/ios/.symlinks/
+app/ios/Flutter/App.framework
+app/ios/Flutter/engine.xcconfig
+app/ios/Flutter/Generated.xcconfig
+app/ios/Runner/GeneratedPluginRegistrant.*
+
+# PlatformIO Firmware ('firmware' folder)
+firmware/.pio/
+firmware/.vscode/
+firmware/firmware.bin
+
+# Secrets (IMPORTANT)
+firmware/include/firebase_config.h
+app/android/app/google-services.json
