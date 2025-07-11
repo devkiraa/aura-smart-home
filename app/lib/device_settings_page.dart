@@ -2,7 +2,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:aura_app/main.dart'; 
+import 'package:aura_app/manage_rooms_page.dart';
 
 // Data model for a single appliance configuration
 class ApplianceConfig {
@@ -33,10 +35,12 @@ class DeviceSettingsPage extends StatefulWidget {
 
 class _DeviceSettingsPageState extends State<DeviceSettingsPage> {
   List<ApplianceConfig> _appliances = [];
+  String? _selectedRoomId;
   bool _isLoading = true;
   bool _isSaving = false;
 
   final List<int> safeGpioPins = [4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
+  final List<String> applianceTypes = ["Light", "Fan", "Socket", "Other"];
 
   @override
   void initState() {
@@ -50,27 +54,30 @@ class _DeviceSettingsPageState extends State<DeviceSettingsPage> {
       final docRef = FirebaseFirestore.instance.collection('device_configs').doc(widget.controller.id);
       final doc = await docRef.get();
       
-      if (doc.exists && doc.data() != null && doc.data()!['appliances'] != null) {
-        final List<dynamic> configData = doc.data()!['appliances'];
+      if (doc.exists && doc.data() != null) {
+        final data = doc.data()!;
+        final List<dynamic> configData = data['appliances'] ?? [];
         if(mounted) {
           setState(() {
+            _selectedRoomId = data['roomId'];
             _appliances = configData.map((data) => ApplianceConfig.fromJson(data)).toList();
           });
         }
       }
     } catch (e) {
       print("Failed to load config from Firestore: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Could not load saved configuration.")),
-        );
-      }
     } finally {
         if(mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _saveConfigurationToFirestore() async {
+    if (_selectedRoomId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Please assign the controller to a room before saving.")),
+      );
+      return;
+    }
     setState(() => _isSaving = true);
     try {
       final docRef = FirebaseFirestore.instance.collection('device_configs').doc(widget.controller.id);
@@ -78,26 +85,21 @@ class _DeviceSettingsPageState extends State<DeviceSettingsPage> {
       
       await docRef.set({
         'controllerName': widget.controller.name,
+        'roomId': _selectedRoomId,
         'appliances': configToSave,
       });
 
-      // After saving, send a command to the Realtime Database to trigger a reboot
       final rtdbRef = FirebaseDatabase.instance.ref('devices/${widget.controller.id}/command');
       await rtdbRef.set('REBOOT');
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Configuration saved! Device will restart to apply new settings.")),
+          const SnackBar(content: Text("Configuration saved! Device will restart.")),
         );
         Navigator.of(context).pop();
       }
     } catch (e) {
       print("Failed to save config: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Failed to save configuration to the cloud.")),
-        );
-      }
     } finally {
         if(mounted) setState(() => _isSaving = false);
     }
@@ -116,6 +118,7 @@ class _DeviceSettingsPageState extends State<DeviceSettingsPage> {
     
     final nameController = TextEditingController();
     int? selectedPin = availablePins.first;
+    String selectedType = applianceTypes.first;
 
     showDialog(
       context: context,
@@ -124,21 +127,30 @@ class _DeviceSettingsPageState extends State<DeviceSettingsPage> {
           builder: (context, setDialogState) {
             return AlertDialog(
               title: const Text("Add Appliance"),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: nameController,
-                    decoration: const InputDecoration(labelText: "Appliance Name (e.g., Ceiling Fan)"),
-                  ),
-                  const SizedBox(height: 16),
-                  DropdownButtonFormField<int>(
-                    value: selectedPin,
-                    decoration: const InputDecoration(labelText: "GPIO Pin", border: OutlineInputBorder()),
-                    items: availablePins.map((int pin) => DropdownMenuItem<int>(value: pin, child: Text("GPIO $pin"))).toList(),
-                    onChanged: (int? newValue) => setDialogState(() => selectedPin = newValue),
-                  ),
-                ],
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: nameController,
+                      decoration: const InputDecoration(labelText: "Appliance Name"),
+                    ),
+                    const SizedBox(height: 16),
+                    DropdownButtonFormField<int>(
+                      value: selectedPin,
+                      decoration: const InputDecoration(labelText: "GPIO Pin", border: OutlineInputBorder()),
+                      items: availablePins.map((pin) => DropdownMenuItem<int>(value: pin, child: Text("GPIO $pin"))).toList(),
+                      onChanged: (val) => setDialogState(() => selectedPin = val),
+                    ),
+                    const SizedBox(height: 16),
+                    DropdownButtonFormField<String>(
+                      value: selectedType,
+                      decoration: const InputDecoration(labelText: "Appliance Type", border: OutlineInputBorder()),
+                      items: applianceTypes.map((type) => DropdownMenuItem<String>(value: type, child: Text(type))).toList(),
+                      onChanged: (val) => setDialogState(() => selectedType = val!),
+                    ),
+                  ],
+                ),
               ),
               actions: [
                 TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text("Cancel")),
@@ -146,7 +158,7 @@ class _DeviceSettingsPageState extends State<DeviceSettingsPage> {
                   onPressed: () {
                     if (nameController.text.isNotEmpty && selectedPin != null) {
                       setState(() {
-                        _appliances.add(ApplianceConfig(name: nameController.text, pin: selectedPin!));
+                        _appliances.add(ApplianceConfig(name: nameController.text, pin: selectedPin!, type: selectedType));
                       });
                       Navigator.of(context).pop();
                     }
@@ -160,6 +172,16 @@ class _DeviceSettingsPageState extends State<DeviceSettingsPage> {
       },
     );
   }
+  
+  IconData getIconForType(String type) {
+    switch (type) {
+      case "Fan": return Icons.air_outlined;
+      case "Socket": return Icons.power_outlined;
+      case "Light":
+      default:
+        return Icons.lightbulb_outline;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -168,42 +190,83 @@ class _DeviceSettingsPageState extends State<DeviceSettingsPage> {
         title: Text("Configure ${widget.controller.name}"),
         actions: [
           if (_isSaving)
-            const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 3)),
-            )
+            const Padding(padding: EdgeInsets.all(16.0), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 3)))
           else
-            IconButton(
-              icon: const Icon(Icons.save),
-              onPressed: _isLoading ? null : _saveConfigurationToFirestore,
-              tooltip: "Save Configuration",
-            )
+            IconButton(icon: const Icon(Icons.save), onPressed: _isLoading ? null : _saveConfigurationToFirestore, tooltip: "Save Configuration")
         ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : _appliances.isEmpty 
-            ? const Center(child: Text("No appliances configured yet. Add one!"))
-            : ListView.builder(
-              padding: const EdgeInsets.only(bottom: 80), // Space for the FAB
-              itemCount: _appliances.length,
-              itemBuilder: (context, index) {
-                final appliance = _appliances[index];
-                return ListTile(
-                  leading: const Icon(Icons.power_outlined),
-                  title: Text(appliance.name),
-                  subtitle: Text("Connected to GPIO ${appliance.pin}"),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete_outline, color: Colors.red),
-                    onPressed: () => setState(() => _appliances.removeAt(index)),
+          : Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: StreamBuilder<QuerySnapshot>(
+                    stream: FirebaseFirestore.instance.collection('users').doc(FirebaseAuth.instance.currentUser!.uid).collection('rooms').snapshots(),
+                    builder: (context, snapshot) {
+                      if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+                      
+                      final rooms = snapshot.data!.docs;
+
+                      // --- THIS IS THE FIX ---
+                      if (rooms.isEmpty) {
+                        return Center(
+                          child: Column(
+                            children: [
+                              const Text("No rooms found."),
+                              const SizedBox(height: 8),
+                              ElevatedButton(
+                                onPressed: () {
+                                  Navigator.of(context).push(MaterialPageRoute(builder: (context) => const ManageRoomsPage()));
+                                },
+                                child: const Text("Create a Room"),
+                              )
+                            ],
+                          ),
+                        );
+                      }
+
+                      return DropdownButtonFormField<String>(
+                        value: _selectedRoomId,
+                        hint: const Text("Assign to a Room"),
+                        decoration: const InputDecoration(border: OutlineInputBorder()),
+                        items: rooms.map((doc) => DropdownMenuItem(value: doc.id, child: Text(doc['name']))).toList(),
+                        onChanged: (value) {
+                          setState(() {
+                            _selectedRoomId = value;
+                          });
+                        },
+                      );
+                    },
                   ),
-                );
-              },
+                ),
+                const Divider(),
+                Expanded(
+                  child: _appliances.isEmpty
+                      ? const Center(child: Text("No appliances configured yet. Add one!"))
+                      : ListView.builder(
+                          padding: const EdgeInsets.only(bottom: 80),
+                          itemCount: _appliances.length,
+                          itemBuilder: (context, index) {
+                            final appliance = _appliances[index];
+                            return ListTile(
+                              leading: Icon(getIconForType(appliance.type)),
+                              title: Text(appliance.name),
+                              subtitle: Text("GPIO ${appliance.pin} • ${appliance.type}"),
+                              trailing: IconButton(
+                                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                                onPressed: () => setState(() => _appliances.removeAt(index)),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
             ),
       floatingActionButton: FloatingActionButton(
         onPressed: _showAddApplianceDialog,
-        child: const Icon(Icons.add),
         tooltip: "Add Appliance",
+        child: const Icon(Icons.add),
       ),
     );
   }
