@@ -46,9 +46,10 @@ class AuraApp extends StatelessWidget {
   }
 }
 
-// --- Auth Wrapper (Unchanged) ---
+// --- Auth Wrapper (Decides which page to show) ---
 class AuthWrapper extends StatelessWidget {
   const AuthWrapper({super.key});
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
@@ -66,22 +67,24 @@ class AuthWrapper extends StatelessWidget {
   }
 }
 
-// --- Login Page (Unchanged) ---
+// --- Login Page ---
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
+
   @override
   State<LoginPage> createState() => _LoginPageState();
 }
 
 class _LoginPageState extends State<LoginPage> {
   bool _isLoading = false;
+
   Future<void> _signInWithGoogle() async {
     setState(() => _isLoading = true);
     try {
       final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
-      if (googleUser == null) {
-        if (mounted) setState(() => _isLoading = false);
-        return;
+      if (googleUser == null) { // User cancelled the sign-in
+          if(mounted) setState(() => _isLoading = false);
+          return;
       }
       final GoogleSignInAuthentication? googleAuth = await googleUser.authentication;
       final credential = GoogleAuthProvider.credential(
@@ -91,7 +94,7 @@ class _LoginPageState extends State<LoginPage> {
       await FirebaseAuth.instance.signInWithCredential(credential);
     } catch (e) {
       print("Google Sign-In Error: $e");
-      if (mounted) setState(() => _isLoading = false);
+      if(mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -126,7 +129,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 }
 
-// --- Data Models (Unchanged) ---
+// --- Data Models ---
 class Appliance {
   final int pin;
   final String name;
@@ -142,7 +145,7 @@ class Appliance {
 }
 
 class AuraController {
-  final String id;
+  final String id; // MAC Address
   final String ip;
   final String name;
   final String version;
@@ -155,6 +158,7 @@ class AuraController {
       appliancesMap.forEach((pin, appValue) {
         parsedAppliances.add(Appliance.fromFirebase(pin, appValue));
       });
+      parsedAppliances.sort((a,b) => a.pin.compareTo(b.pin));
     }
     return AuraController(
       id: key,
@@ -166,7 +170,7 @@ class AuraController {
   }
 }
 
-// --- HomePage with restored GridView UI ---
+// --- Home Page with GridView UI ---
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
   @override
@@ -176,23 +180,87 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final DatabaseReference _devicesRef = FirebaseDatabase.instance.ref('devices');
 
-  Future<void> _toggleDeviceState(AuraController controller) async {
-    // This switch now controls the FIRST appliance in the list.
-    if (controller.appliances.isEmpty) return;
-    
-    final primaryAppliance = controller.appliances.first;
-    final url = 'http://${controller.ip}/toggle?pin=${primaryAppliance.pin}';
+  Future<void> _toggleApplianceState(AuraController controller, Appliance appliance) async {
+  final newState = !appliance.state;
+  
+  // FIX: Point to the specific state of the specific pin
+  final dbRef = FirebaseDatabase.instance.ref(
+      'devices/${controller.id}/appliances/${appliance.pin}/state');
+  
+  try {
+    // Set the new state ("ON" or "OFF") in the Realtime Database
+    await dbRef.set(newState ? "ON" : "OFF");
+  } catch (e) {
+    print("Error toggling appliance via Firebase: $e");
+  }
+}
 
-    try {
-      await http.get(Uri.parse(url)).timeout(const Duration(seconds: 2));
-    } catch (e) {
-      print("Error toggling device: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to contact device.')),
+  void _showApplianceControls(AuraController controller) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter modalState) {
+            final controllerStream = _devicesRef.child(controller.id).onValue;
+            return StreamBuilder<DatabaseEvent>(
+              stream: controllerStream,
+              builder: (context, snapshot) {
+                if (!snapshot.hasData || snapshot.data?.snapshot.value == null) {
+                  return const Center(child: Padding(
+                    padding: EdgeInsets.all(32.0),
+                    child: CircularProgressIndicator(),
+                  ));
+                }
+                final updatedController = AuraController.fromFirebase(
+                    snapshot.data!.snapshot.key!,
+                    snapshot.data!.snapshot.value as Map<dynamic, dynamic>);
+
+                return Container(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        updatedController.name,
+                        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                      ),
+                      const Divider(height: 24),
+                      if (updatedController.appliances.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 16.0),
+                          child: Text("No appliances configured for this controller."),
+                        )
+                      else
+                        // Use Flexible and ListView for scrollable content
+                        Flexible(
+                          child: ListView(
+                            shrinkWrap: true,
+                            children: updatedController.appliances.map((appliance) {
+                              return SwitchListTile(
+                                title: Text(appliance.name),
+                                subtitle: Text("GPIO ${appliance.pin}"),
+                                value: appliance.state,
+                                onChanged: (value) {
+                                  _toggleApplianceState(updatedController, appliance);
+                                },
+                                secondary: Icon(
+                                  Icons.lightbulb_outline,
+                                  color: appliance.state ? Colors.amber.shade700 : Colors.grey,
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
         );
-      }
-    }
+      },
+    );
   }
 
   @override
@@ -244,80 +312,73 @@ class _HomePageState extends State<HomePage> {
                     controllers.add(AuraController.fromFirebase(key, value));
                   });
 
-                  return GridView.count(
-                    crossAxisCount: 2,
-                    crossAxisSpacing: 16,
-                    mainAxisSpacing: 16,
-                    childAspectRatio: 1,
-                    children: controllers.map((controller) {
-                      // The card's state is based on the first appliance, or OFF if none are configured.
-                      final bool isCardOn = controller.appliances.isNotEmpty ? controller.appliances.first.state : false;
-                      final String cardTitle = controller.appliances.isNotEmpty ? controller.appliances.first.name : controller.name;
+                  return GridView.builder(
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 16,
+                      mainAxisSpacing: 16,
+                      childAspectRatio: 1,
+                    ),
+                    itemCount: controllers.length,
+                    itemBuilder: (context, index) {
+                      final controller = controllers[index];
+                      final bool isAnyOn = controller.appliances.any((a) => a.state);
 
-                      return Container(
-                        decoration: BoxDecoration(
-                          color: isCardOn ? Colors.black : Colors.white,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: isCardOn ? Colors.black : Colors.grey.shade300,
-                            width: 1.5,
+                      return InkWell(
+                        onTap: () => _showApplianceControls(controller),
+                        borderRadius: BorderRadius.circular(20),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: isAnyOn ? Colors.black : Colors.white,
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: isAnyOn ? Colors.black : Colors.grey.shade300,
+                              width: 1.5,
+                            ),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(12.0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(Icons.developer_board, size: 32, color: isAnyOn ? Colors.white : Colors.black),
+                                const SizedBox(height: 8),
+                                Text(
+                                  controller.name,
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    color: isAnyOn ? Colors.white : Colors.black,
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                Text(
+                                  "${controller.appliances.length} appliances",
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: isAnyOn ? Colors.white70 : Colors.black54,
+                                  ),
+                                ),
+                                const Spacer(),
+                                Align(
+                                  alignment: Alignment.bottomRight,
+                                  child: IconButton(
+                                    padding: EdgeInsets.zero,
+                                    icon: Icon(Icons.settings_outlined, color: isAnyOn ? Colors.white54 : Colors.black54),
+                                    onPressed: () {
+                                      Navigator.of(context).push(MaterialPageRoute(
+                                        builder: (context) => DeviceSettingsPage(controller: controller),
+                                      ));
+                                    },
+                                  ),
+                                )
+                              ],
+                            ),
                           ),
                         ),
-                        child: Stack(
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.all(12.0),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Icon(Icons.lightbulb, size: 32, color: isCardOn ? Colors.white : Colors.black),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    cardTitle,
-                                    style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold,
-                                      color: isCardOn ? Colors.white : Colors.black,
-                                    ),
-                                  ),
-                                  Text(
-                                    "v${controller.version}",
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: isCardOn ? Colors.white70 : Colors.black54,
-                                    ),
-                                  ),
-                                  const Spacer(),
-                                  Switch(
-                                    value: isCardOn,
-                                    onChanged: (_) => _toggleDeviceState(controller),
-                                    activeColor: Colors.white,
-                                    activeTrackColor: Colors.white.withOpacity(0.5),
-                                    inactiveThumbColor: Colors.black,
-                                    inactiveTrackColor: Colors.black12,
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Positioned(
-                              top: 4,
-                              right: 4,
-                              child: IconButton(
-                                icon: Icon(
-                                  Icons.settings,
-                                  color: isCardOn ? Colors.white54 : Colors.black54,
-                                ),
-                                onPressed: () {
-                                  Navigator.of(context).push(MaterialPageRoute(
-                                    builder: (context) => DeviceSettingsPage(controller: controller),
-                                  ));
-                                },
-                              ),
-                            ),
-                          ],
-                        ),
                       );
-                    }).toList(),
+                    },
                   );
                 },
               ),
