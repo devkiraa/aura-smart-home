@@ -10,6 +10,7 @@ import 'scan_page.dart';
 import 'settings_page.dart';
 import 'device_settings_page.dart';
 import 'manage_rooms_page.dart';
+import 'splash_screen.dart';
 
 
 void main() async {
@@ -41,7 +42,7 @@ class AuraApp extends StatelessWidget {
         cardColor: Colors.white,
         colorScheme: ColorScheme.fromSwatch().copyWith(secondary: Colors.black),
       ),
-      home: const AuthWrapper(),
+      home: const SplashScreen(),
       routes: {
         '/login': (context) => const LoginPage(),
       },
