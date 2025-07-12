@@ -6,7 +6,7 @@
 #include <Preferences.h>
 #include "firebase_config.h"
 
-#define FW_VERSION "9.2-reconfig"
+#define FW_VERSION "2.0"
 #define ONBOARD_LED 2
 
 // --- Global Objects & Data Structures ---
@@ -232,12 +232,12 @@ void setup() {
     digitalWrite(ONBOARD_LED, LOW); 
 
     Serial.println("\n\n");
-Serial.println("███████╗███████╗██████╗  ██████╗ ██████╗  █████╗ ██╗   ██╗");
-Serial.println("╚══███╔╝██╔════╝██╔══██╗██╔═══██╗██╔══██╗██╔══██╗╚██╗ ██╔╝");
-Serial.println("  ███╔╝ █████╗  ██████╔╝██║   ██║██████╔╝███████║ ╚████╔╝ ");
-Serial.println(" ███╔╝  ██╔══╝  ██╔══██╗██║   ██║██╔══██╗██╔══██║  ╚██╔╝  ");
-Serial.println("███████╗███████╗██║  ██║╚██████╔╝██║  ██║██║  ██║   ██║   ");
-Serial.println("╚══════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ");
+Serial.println("███████╗███████╗██████╗  ██████╗  █████╗ ██╗   ██╗");
+Serial.println("╚══███╔╝██╔════╝██╔══██╗██╔═══██╗██╔══██╗╚██╗ ██╔╝");
+Serial.println("  ███╔╝ █████╗  ██████╔╝██║   ██║███████║ ╚████╔╝ ");
+Serial.println(" ███╔╝  ██╔══╝  ██╔══██╗██║   ██║██╔══██║  ╚██╔╝  ");
+Serial.println("███████╗███████╗██║  ██║╚██████╔╝██║  ██║   ██║   ");
+Serial.println("╚══════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ");
 Serial.printf("\n- - - ZERODAY CONTROLLER INITIALIZING | v%s - - -\n", FW_VERSION);
 Serial.printf("      MAC: %s\n\n", WiFi.macAddress().c_str());
 
