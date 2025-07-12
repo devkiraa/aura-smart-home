@@ -6,7 +6,7 @@
 #include <Preferences.h>
 #include "firebase_config.h"
 
-#define FW_VERSION "9.1-robust-log"
+#define FW_VERSION "9.2-reconfig"
 #define ONBOARD_LED 2
 
 // --- Global Objects & Data Structures ---
@@ -34,7 +34,7 @@ void setupWiFi();
 void loadConfigurationFromFirestore() {
   if (!firebaseReady) return;
   String documentPath = "device_configs/" + WiFi.macAddress();
-  Serial.printf("  > Fetching remote config...");
+  Serial.println("  [->] Fetching config from Firestore: " + documentPath);
 
   if (Firebase.Firestore.getDocument(&fbdo, FIREBASE_PROJECT_ID, "", documentPath.c_str(), "")) {
     JsonDocument doc;
@@ -42,6 +42,7 @@ void loadConfigurationFromFirestore() {
     if (doc.containsKey("fields") && doc["fields"].containsKey("appliances")) {
       JsonArray array = doc["fields"]["appliances"]["arrayValue"]["values"];
       appliances.clear();
+      Serial.println("  [+] Found " + String(array.size()) + " appliances.");
       for (JsonObject obj : array) {
         Appliance appliance;
         appliance.name = obj["mapValue"]["fields"]["name"]["stringValue"].as<String>();
@@ -49,14 +50,11 @@ void loadConfigurationFromFirestore() {
         appliance.state = false;
         appliances.push_back(appliance);
         pinMode(appliance.pin, OUTPUT);
-        digitalWrite(appliance.pin, LOW); // Active-high relays start OFF
+        digitalWrite(appliance.pin, LOW);
       }
-      Serial.printf("%-45s [ OK ]\n", "");
-      Serial.printf("    > Found %d configured appliances.\n", appliances.size());
     }
   } else {
-    Serial.printf("%-45s [FAIL]\n", "");
-    Serial.println("    > Firestore Error: " + fbdo.errorReason());
+    Serial.println("  [-] Firestore Get Failed: " + fbdo.errorReason());
   }
 }
 
@@ -69,7 +67,7 @@ void applianceStreamCallback(FirebaseStream data) {
         if (appliance.pin == pin) {
             appliance.state = newState;
             digitalWrite(appliance.pin, newState);
-            Serial.printf("[COMMAND] Remote Toggle: Pin %d -> %s\n", pin, newState ? "ON" : "OFF");
+            Serial.printf("  [->] Remote Toggled GPIO %d to %s\n", pin, newState ? "ON" : "OFF");
             break;
         }
     }
@@ -79,7 +77,7 @@ void applianceStreamCallback(FirebaseStream data) {
 
 void commandStreamCallback(FirebaseStream data) {
   if (data.dataTypeEnum() == fb_esp_rtdb_data_type_string && data.stringData() == "REBOOT") {
-    Serial.println("[COMMAND] Remote Reboot Received. Restarting...");
+    Serial.println("\n<REBOOT> Command received! Restarting...");
     Firebase.RTDB.deleteNode(&fbdo, data.streamPath());
     delay(1000);
     ESP.restart();
@@ -91,16 +89,14 @@ void streamTimeoutCallback(bool timeout) {
 }
 
 void setupFirebase() {
-    Serial.println("==================================================");
-    Serial.println("INITIALIZING CLOUD SERVICES");
-    Serial.println("==================================================");
+    Serial.println("\n--- [ FIREBASE INIT ] ---");
     config.api_key = API_KEY;
     config.database_url = DATABASE_URL;
     config.signer.test_mode = true;
     Firebase.begin(&config, &auth);
     Firebase.reconnectWiFi(true);
 
-    Serial.printf("%-45s", "  > Authenticating with Firebase...");
+    Serial.print("  [..] Authenticating...");
     unsigned long startMillis = millis();
     while (!Firebase.ready() && millis() - startMillis < 10000) {
         digitalWrite(ONBOARD_LED, HIGH); delay(50);
@@ -109,14 +105,13 @@ void setupFirebase() {
         digitalWrite(ONBOARD_LED, LOW); delay(850);
     }
 
-    if (!Firebase.ready()) { Serial.println(" [FAIL]"); return; }
+    if (!Firebase.ready()) { Serial.println("\n  [-] Authentication Failed."); return; }
     
     firebaseReady = true;
-    Serial.println(" [ OK ]");
+    Serial.println("\n  [+] Authentication Success.");
     
     loadConfigurationFromFirestore();
     
-    Serial.printf("%-45s", "  > Initializing Realtime Database streams...");
     String commandPath = "devices/" + WiFi.macAddress() + "/command";
     Firebase.RTDB.beginStream(&command_stream, commandPath.c_str());
     Firebase.RTDB.setStreamCallback(&command_stream, commandStreamCallback, streamTimeoutCallback);
@@ -124,9 +119,8 @@ void setupFirebase() {
     String appliancesPath = "devices/" + WiFi.macAddress() + "/appliances";
     Firebase.RTDB.beginStream(&appliance_stream, appliancesPath.c_str());
     Firebase.RTDB.setStreamCallback(&appliance_stream, applianceStreamCallback, streamTimeoutCallback);
-    Serial.println(" [ OK ]");
-    
-    Serial.printf("%-45s", "  > Reporting device status to cloud...");
+    Serial.println("  [+] RTDB Stream listeners active.");
+
     String device_path = "devices/" + WiFi.macAddress();
     FirebaseJson status_json;
     status_json.set("ip", WiFi.localIP().toString());
@@ -143,17 +137,13 @@ void setupFirebase() {
     }
     status_json.set("appliances", appliances_json);
     
-    if (Firebase.RTDB.setJSON(&fbdo, device_path.c_str(), &status_json)) {
-      Serial.println(" [ OK ]");
-    } else {
-      Serial.println(" [FAIL]");
+    if (!Firebase.RTDB.setJSON(&fbdo, device_path.c_str(), &status_json)) {
+      Serial.println("  [-] RTDB Set Failed: " + fbdo.errorReason());
     }
 }
 
 void startWebServer() {
-  Serial.println("==================================================");
-  Serial.println("STARTING LOCAL WEB SERVER");
-  Serial.println("==================================================");
+  Serial.println("\n--- [ LOCAL API INIT ] ---");
   server.on("/toggle", HTTP_GET, [] (AsyncWebServerRequest *request) {
     if (request->hasParam("pin")) {
       digitalWrite(ONBOARD_LED, HIGH);
@@ -172,26 +162,45 @@ void startWebServer() {
     }
     request->send(400, "text/plain", "Missing or invalid pin parameter");
   });
+
+  server.on("/reconfigure-wifi", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL, [](AsyncWebServerRequest * request, uint8_t *data, size_t len, size_t index, size_t total) {
+    String body = "";
+    for (size_t i = 0; i < len; i++) { body += (char)data[i]; }
+    
+    JsonDocument doc;
+    deserializeJson(doc, body);
+    const char* ssid = doc["ssid"];
+    const char* pass = doc["pass"];
+
+    preferences.begin("wifi-creds", false);
+    preferences.putString("ssid", ssid);
+    preferences.putString("password", pass);
+    preferences.end();
+    
+    request->send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Credentials saved. Restarting.\"}");
+    Serial.println("[Server] New Wi-Fi credentials received. Restarting...");
+    delay(1000);
+    ESP.restart();
+  });
+
   server.begin();
-  Serial.printf("%-45s [ OK ]\n", "  > Server listening on port 80");
+  Serial.println("  [+] Web server running.");
 }
 
 void setupWiFi() {
-    Serial.println("==================================================");
-    Serial.println("INITIALIZING NETWORK INTERFACE");
-    Serial.println("==================================================");
+    Serial.println("\n--- [ WIFI SETUP ] ---");
     preferences.begin("wifi-creds", true);
     String saved_ssid = preferences.getString("ssid", "");
     String saved_pass = preferences.getString("password", "");
     preferences.end();
     
     if (saved_ssid.length() == 0) {
-      Serial.printf("%-45s [FAIL]\n", "  > No Wi-Fi credentials found.");
+      Serial.println("  [!] No credentials found. Halting.");
       return;
     }
 
     WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
-    Serial.printf("%-45s", ("  > Connecting to " + saved_ssid).c_str());
+    Serial.print("  [..] Attempting connection to " + saved_ssid);
     
     int retries = 0;
     while (WiFi.status() != WL_CONNECTED && retries < 40) {
@@ -200,15 +209,16 @@ void setupWiFi() {
         Serial.print(".");
         retries++;
     }
+    Serial.println();
     
     if (WiFi.status() == WL_CONNECTED) {
         digitalWrite(ONBOARD_LED, LOW);
-        Serial.println(" [ OK ]");
-        Serial.printf("    > IP Address: %s\n", WiFi.localIP().toString().c_str());
+        Serial.println("  [+] Connection Established!");
+        Serial.print("      IP Address: "); Serial.println(WiFi.localIP().toString());
         setupFirebase(); 
         startWebServer(); 
     } else {
-        Serial.println(" [FAIL]");
+        Serial.println("  [-] Connection Failed!");
         for (int i=0; i<3; i++) {
           digitalWrite(ONBOARD_LED, HIGH); delay(400);
           digitalWrite(ONBOARD_LED, LOW); delay(400);
@@ -222,20 +232,18 @@ void setup() {
     digitalWrite(ONBOARD_LED, LOW); 
 
     Serial.println("\n\n");
-Serial.println("███████╗███████╗██████╗  ██████╗  █████╗ ██╗   ██╗");
-Serial.println("╚══███╔╝██╔════╝██╔══██╗██╔═══██╗██╔══██╗╚██╗ ██╔╝");
-Serial.println("  ███╔╝ █████╗  ██████╔╝██║   ██║███████║ ╚████╔╝ ");
-Serial.println(" ███╔╝  ██╔══╝  ██╔══██╗██║   ██║██╔══██║  ╚██╔╝  ");
-Serial.println("███████╗███████╗██║  ██║╚██████╔╝██║  ██║   ██║   ");
-Serial.println("╚══════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ");
+Serial.println("███████╗███████╗██████╗  ██████╗ ██████╗  █████╗ ██╗   ██╗");
+Serial.println("╚══███╔╝██╔════╝██╔══██╗██╔═══██╗██╔══██╗██╔══██╗╚██╗ ██╔╝");
+Serial.println("  ███╔╝ █████╗  ██████╔╝██║   ██║██████╔╝███████║ ╚████╔╝ ");
+Serial.println(" ███╔╝  ██╔══╝  ██╔══██╗██║   ██║██╔══██╗██╔══██║  ╚██╔╝  ");
+Serial.println("███████╗███████╗██║  ██║╚██████╔╝██║  ██║██║  ██║   ██║   ");
+Serial.println("╚══════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ");
 Serial.printf("\n- - - ZERODAY CONTROLLER INITIALIZING | v%s - - -\n", FW_VERSION);
 Serial.printf("      MAC: %s\n\n", WiFi.macAddress().c_str());
 
     
     setupWiFi();
-    Serial.println("\n==================================================");
-    Serial.println("SYSTEM ONLINE AND READY");
-    Serial.println("==================================================");
+    Serial.println("\n--- [ SYSTEM ONLINE ] ---");
 }
 
 void loop() {}
