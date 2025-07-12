@@ -6,7 +6,7 @@
 #include <Preferences.h>
 #include "firebase_config.h"
 
-#define FW_VERSION "5.2-sync-fix"
+#define FW_VERSION "9.0-firebase-only"
 #define ONBOARD_LED 2
 
 // --- Global Objects & Data Structures ---
@@ -34,7 +34,8 @@ void setupWiFi();
 void loadConfigurationFromFirestore() {
   if (!firebaseReady) return;
   String documentPath = "device_configs/" + WiFi.macAddress();
-  Serial.println("[Firestore] Fetching config from: " + documentPath);
+  Serial.println("  [->] Fetching config from Firestore: " + documentPath);
+
   if (Firebase.Firestore.getDocument(&fbdo, FIREBASE_PROJECT_ID, "", documentPath.c_str(), "")) {
     JsonDocument doc;
     deserializeJson(doc, fbdo.payload().c_str());
@@ -49,6 +50,7 @@ void loadConfigurationFromFirestore() {
         appliance.state = false;
         appliances.push_back(appliance);
         pinMode(appliance.pin, OUTPUT);
+        // FIX: Set pin LOW to keep active-high relays OFF on boot.
         digitalWrite(appliance.pin, LOW);
       }
     }
@@ -58,17 +60,21 @@ void loadConfigurationFromFirestore() {
 }
 
 void applianceStreamCallback(FirebaseStream data) {
-  String pinStr = data.dataPath().substring(1, data.dataPath().lastIndexOf('/'));
-  int pin = pinStr.toInt();
-  bool newState = (data.stringData() == "ON");
-  for (auto& appliance : appliances) {
-    if (appliance.pin == pin) {
-      appliance.state = newState;
-      digitalWrite(pin, newState);
-      Serial.printf("  [->] Remote Toggled GPIO %d to %s\n", pin, newState ? "ON" : "OFF");
-      break;
+    digitalWrite(ONBOARD_LED, HIGH);
+    String pinStr = data.dataPath().substring(1, data.dataPath().lastIndexOf('/'));
+    int pin = pinStr.toInt();
+    bool newState = (data.stringData() == "ON");
+    for (auto& appliance : appliances) {
+        if (appliance.pin == pin) {
+            appliance.state = newState;
+            // FIX: Use standard (non-inverted) logic
+            digitalWrite(appliance.pin, newState);
+            Serial.printf("  [->] Remote Toggled GPIO %d to %s\n", pin, newState ? "ON" : "OFF");
+            break;
+        }
     }
-  }
+    delay(50);
+    digitalWrite(ONBOARD_LED, LOW);
 }
 
 void commandStreamCallback(FirebaseStream data) {
@@ -84,7 +90,6 @@ void streamTimeoutCallback(bool timeout) {
   if (timeout) Serial.println("[!] RTDB Stream timeout.");
 }
 
-// --- UPDATED FIREBASE SETUP ---
 void setupFirebase() {
     Serial.println("\n--- [ FIREBASE INIT ] ---");
     config.api_key = API_KEY;
@@ -109,8 +114,6 @@ void setupFirebase() {
     Firebase.RTDB.setStreamCallback(&appliance_stream, applianceStreamCallback, streamTimeoutCallback);
     Serial.println("  [+] RTDB Stream listeners active.");
 
-    // --- THIS IS THE FIX ---
-    // Report the full device status, INCLUDING the initial state of all appliances
     String device_path = "devices/" + WiFi.macAddress();
     FirebaseJson status_json;
     status_json.set("ip", WiFi.localIP().toString());
@@ -127,10 +130,7 @@ void setupFirebase() {
     }
     status_json.set("appliances", appliances_json);
     
-    // Use setJSON to overwrite the whole device node with the new, complete data
-    if (Firebase.RTDB.setJSON(&fbdo, device_path.c_str(), &status_json)) {
-      Serial.println("  [+] Full device status reported to RTDB.");
-    } else {
+    if (!Firebase.RTDB.setJSON(&fbdo, device_path.c_str(), &status_json)) {
       Serial.println("  [-] RTDB Set Failed: " + fbdo.errorReason());
     }
 }
@@ -139,24 +139,23 @@ void startWebServer() {
   Serial.println("\n--- [ LOCAL API INIT ] ---");
   server.on("/toggle", HTTP_GET, [] (AsyncWebServerRequest *request) {
     if (request->hasParam("pin")) {
+      digitalWrite(ONBOARD_LED, HIGH);
       int pin = request->getParam("pin")->value().toInt();
-      bool newState = false;
       for (auto& appliance : appliances) {
         if (appliance.pin == pin) {
           appliance.state = !appliance.state;
-          digitalWrite(appliance.pin, appliance.state); // Corrected logic
-          newState = appliance.state;
-          break;
+          // FIX: Use standard (non-inverted) logic
+          digitalWrite(appliance.pin, appliance.state);
+          Firebase.RTDB.setString(&fbdo, "devices/" + WiFi.macAddress() + "/appliances/" + String(pin) + "/state", appliance.state ? "ON" : "OFF");
+          request->send(200, "text/plain", appliance.state ? "ON" : "OFF");
+          delay(50);
+          digitalWrite(ONBOARD_LED, LOW);
+          return;
         }
       }
-      request->send(200, "text/plain", newState ? "ON" : "OFF");
-      if (firebaseReady) {
-        String path = "devices/" + WiFi.macAddress() + "/appliances/" + String(pin) + "/state";
-        Firebase.RTDB.setString(&fbdo, path.c_str(), newState ? "ON" : "OFF");
-      }
     }
+    request->send(400, "text/plain", "Missing or invalid pin parameter");
   });
-  // ... reconfigure-wifi endpoint is unchanged ...
   server.begin();
   Serial.println("  [+] Web server running.");
 }
@@ -194,8 +193,8 @@ void setupWiFi() {
     } else {
         Serial.println("  [-] Connection Failed!");
         for (int i=0; i<3; i++) {
-          digitalWrite(ONBOARD_LED, HIGH); delay(500);
-          digitalWrite(ONBOARD_LED, LOW); delay(500);
+          digitalWrite(ONBOARD_LED, HIGH); delay(400);
+          digitalWrite(ONBOARD_LED, LOW); delay(400);
         }
     }
 }
@@ -213,7 +212,7 @@ void setup() {
     Serial.println("      ███████╗███████╗██║     ╚██████╔╝╚██████╔╝██║  ██║   ██║   ");
     Serial.println("      ╚══════╝╚══════╝╚═╝     ╚═════╝  ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ");
     Serial.printf("\n- - - ZERODAY CONTROLLER INITIALIZING | v%s - - -\n", FW_VERSION);
-
+    
     setupWiFi();
     Serial.println("\n--- [ SYSTEM ONLINE ] ---");
 }
