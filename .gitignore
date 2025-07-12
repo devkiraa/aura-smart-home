@@ -27,3 +27,6 @@ firmware/firmware.bin
 # Secrets (IMPORTANT)
 firmware/include/firebase_config.h
 app/android/app/google-services.json
+# Keystore files
+*.jks
+android/key.properties
